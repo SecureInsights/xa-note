@@ -49,6 +49,24 @@
    - Build output directory: `/` (根目录)
 7. 点击 **Save and Deploy**
 
+### 步骤 5: 创建并绑定 D1 数据库（必须）
+
+本项目使用 Cloudflare D1 作为数据库，**必须在部署后完成此步，应用才能正常读写数据**。只需创建一个空数据库即可--**表结构会在应用首次启动时自动创建**，无需手动导入 SQL。
+
+#### 5.1 创建 D1 数据库
+```bash
+# 创建 D1 数据库（数据库名：xa-note-db）
+wrangler d1 create xa-note-db
+```
+> 也可在 Cloudflare 控制台手动创建一个名为 `xa-note-db` 的空数据库。
+
+#### 5.2 绑定 D1 数据库到 Pages 项目
+1. Cloudflare Dashboard -> **Workers & Pages** -> 进入 `xa-note` 项目
+2. **Settings** -> **Bindings** -> 添加 **D1 database**：
+   - **Variable name**: `DB`
+   - **D1 database**: `xa-note-db`
+3. 进入 **Deployments** -> 对最新部署点击 **Retry deployment**（绑定 D1 后必须重新部署生效）
+
 ### 自动部署流程
 
 完成上述设置后，每次推送代码到 `main` 或 `master` 分支时：

@@ -47,53 +47,55 @@ If you find this project helpful, please give it a `Star` ⭐!
 
 ## 🚀 Quick Deployment Guide
 
-### Method 1: Deploy on Cloudflare
+### Method 1: One-Click Deploy on Cloudflare
+
+This project ships with a GitHub Actions workflow that automatically deploys to Cloudflare Pages whenever you push to the `main` branch. Complete the following one-time setup before deploying.
+
+> 📌 Full illustrated guide: [DEPLOYMENT.md](DEPLOYMENT.md)
 
 #### Step 1: Fork This Repository
-Please fork this repo—and don’t forget to give it a `Star`! ⭐
+Fork this repo to your own account-and don't forget to give it a `Star`! ⭐
 
-#### Step 2: Create a D1 Database
-Manually create a D1 database named: `xa-note-db`
+#### Step 2: Create the D1 Database (one-time)
+XA Note uses Cloudflare D1 as its database. You only need to create an empty database-the **table schema is created automatically on the app's first startup**, so there's no need to import any SQL manually.
 
-*Or* create via CLI:
 ```bash
-# Create D1 database
+# Create the D1 database (name: xa-note-db)
 wrangler d1 create xa-note-db
 ```
 
-#### Step 3: Import Database Schema
-Manually copy and paste the contents of `d1-init.sql` (*6 tables*) into the D1 console,
+> You can also create an empty database named `xa-note-db` manually in the Cloudflare dashboard.
 
-*Or* import via CLI:
-```bash
-# Initialize database with schema and default data
-wrangler d1 execute xa-note-db --file=d1-init.sql
-```
+#### Step 3: Create a Cloudflare API Token
+1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com/) -> **My Profile** -> **API Tokens** -> **Create Token**
+2. Choose the **Edit Cloudflare Workers** template; permissions must include:
+   - Account -> **Cloudflare Pages: Edit**
+   - Account -> **Cloudflare Workers: Edit**
+3. **Copy and save** the generated API Token (shown only once)
 
-#### Step 4: Create the Project
-1. Go to **Cloudflare Dashboard** > **Workers & Pages** > **Create application** > **Deploy a Pages project? Get started**
-2. Connect your Git repository
-3. Configure **Build settings**:
-   - **Framework preset**: `None`
-   - **Build command**: `npm install`
-   - **Build output directory**: `.` (current directory)
-   - **Root directory**: `/` (repository root)
+#### Step 4: Configure GitHub Secrets
+In your GitHub repo -> **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**, add:
 
-#### Step 5: Configure Environment Bindings (via Dashboard)
-1. Go to **Cloudflare Dashboard** > **Workers & Pages** > **xa-note**
-2. Navigate to **Settings** > **Bindings**
-3. Add a **D1 Database** binding:
+| Name | Value |
+|------|-------|
+| `CLOUDFLARE_API_TOKEN` | The API Token from Step 3 |
+| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID (visible in the dashboard sidebar) |
+
+#### Step 5: Bind the D1 Database (one-time, via Dashboard)
+After the first automatic deployment creates the Pages project, bind the database so the app can read/write data:
+1. Cloudflare Dashboard -> **Workers & Pages** -> open the `xa-note` project
+2. **Settings** -> **Bindings** -> add a **D1 database** binding:
    - **Variable name**: `DB`
-   - **D1 Database**: `xa-note-db`
-4. Go to **Deployments** > **All deployments**, find the latest deployment, and click **Redeploy**  
-   *(Note: After binding a D1 database, you must trigger a new deployment for the binding to take effect)*
+   - **D1 database**: `xa-note-db`
+3. Go to **Deployments** -> find the latest deployment and click **Retry deployment** (a redeploy is required after binding D1 for it to take effect)
 
-#### Step 6: Post-Deployment Steps
+#### Step 6: Trigger Deployment and Visit
+1. Push any commit to the `main` branch (or manually **Run workflow** under the repo's **Actions** tab) and GitHub Actions will deploy automatically
+2. Once deployed, visit your site at: `https://xa-note.pages.dev`
+3. **Custom domain**: Bind your own domain in the Pages project settings
+4. **Complete setup**: Follow the onboarding wizard and create your first note!
 
-1. **Visit your site**: `https://your-project.pages.dev`
-2. **Custom domain**: Configure a custom domain if desired
-3. **Complete setup**: Follow the onboarding wizard
-4. **Start using**: Create your first note!
+> 💡 Every subsequent push to `main` triggers an automatic deployment-no manual action needed.
 
 ---
 
