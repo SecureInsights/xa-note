@@ -17,6 +17,9 @@ import {
 import { backupScheduler } from './services/backup-scheduler.js'
 import { requireAuth } from './middleware/auth.js'
 import svgCaptcha from 'svg-captcha'
+// Generate a random JWT secret on each startup
+const JWT_SECRET = crypto.randomBytes(32).toString('hex')
+
 import { generateToken, verifyToken, generateSessionId } from './utils/jwt.js'
 import { LogService, LOG_ACTIONS } from './services/log-service.js'
 
