@@ -3,10 +3,13 @@ import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { nanoid } from 'nanoid'
 
+// Generate a random JWT secret on each startup
+const JWT_SECRET = crypto.getRandomValues(new Uint8Array(32)).reduce((acc, val) => acc + val.toString(16).padStart(2, '0'), '')
+
 // Web Crypto based JWT helpers for Cloudflare Workers
 async function generateToken(payload: any, secret?: string): Promise<string> {
   const header = { alg: 'HS256', typ: 'JWT' }
-  const jwtSecret = secret || 'default-secret'
+  const jwtSecret = secret || JWT_SECRET
   const encoder = new TextEncoder()
   const headerB64 = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
   const payloadB64 = btoa(JSON.stringify(payload)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
@@ -28,7 +31,7 @@ async function verifyToken(token: string, secret?: string): Promise<any> {
     const parts = token.split('.')
     if (parts.length !== 3) return null
     const [headerB64, payloadB64, signatureB64] = parts
-    const jwtSecret = secret || 'default-secret'
+    const jwtSecret = secret || JWT_SECRET
     const encoder = new TextEncoder()
     const data = headerB64 + '.' + payloadB64
     const key = await crypto.subtle.importKey(
@@ -139,7 +142,6 @@ async function comparePassword(password: string, stored: string): Promise<boolea
 // Define the environment and variables types for Hono
 type Bindings = {
   DB?: any
-  JWT_SECRET?: string
 }
 
 type Variables = {
@@ -1126,7 +1128,7 @@ app.post('/api/settings', requireAuth, async (c) => {
 })
 
 // Categories
-app.get('/api/categories', async (c) => {
+app.get('/api/categories', requireAuth, async (c) => {
   const db = c.get('db') as any
   const rows = await db.prepare('SELECT * FROM categories ORDER BY created_at').all()
   return c.json(rows)
@@ -1216,7 +1218,7 @@ app.delete('/api/categories/:id', requireAuth, async (c) => {
 })
 
 // Notes
-app.get('/api/notes', async (c) => {
+app.get('/api/notes', requireAuth, async (c) => {
   const db = c.get('db') as any
   const categoryId = c.req.query('category')
 
@@ -1260,6 +1262,7 @@ app.post('/api/notes', requireAuth, async (c) => {
 
 app.put('/api/notes/:id', requireAuth, async (c) => {
   const db = c.get('db') as any
+  const user = c.get('user')
   const id = c.req.param('id')
   if (!id) return c.json({ error: 'BAD_REQUEST' }, 400)
 
@@ -1269,6 +1272,9 @@ app.put('/api/notes/:id', requireAuth, async (c) => {
     tags: string[]
     category_id: string
   }
+
+  // Get old note for logging
+  const oldNote = await db.prepare('SELECT * FROM notes WHERE id=?').get(id) as any
 
   await db.prepare(`
     UPDATE notes
@@ -1282,6 +1288,21 @@ app.put('/api/notes/:id', requireAuth, async (c) => {
     Date.now(),
     id
   )
+
+  // 记录笔记更新
+  await logAction(db, {
+    user_id: user.email || user.userId,
+    action: 'update_note',
+    target_type: 'note',
+    target_id: id,
+    details: { 
+      old_title: oldNote?.title, 
+      new_title: note.title,
+      category_id: note.category_id 
+    },
+    ip_address: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown',
+    user_agent: c.req.header('user-agent') || 'unknown'
+  })
 
   return c.json({ ok: true })
 })
@@ -1358,6 +1379,12 @@ app.post('/api/share/:id', requireAuth, async (c) => {
   }
 
   const code = nanoid(8)
+  
+  // Hash password if provided
+  let passwordHash: string | null = null
+  if (body.password) {
+    passwordHash = await hashPassword(body.password)
+  }
 
   await db.prepare(`
     INSERT INTO shares (id, note_id, password, expires_at, created_at)
@@ -1365,7 +1392,7 @@ app.post('/api/share/:id', requireAuth, async (c) => {
   `).run(
     code,
     id,
-    body.password ?? null,
+    passwordHash,
     body.expiresAt ?? null,
     Date.now()
   )
@@ -1442,8 +1469,15 @@ app.post('/api/share/:code/view', async (c) => {
     return c.json({ error: 'EXPIRED' }, 403)
   }
 
-  if (share.password && share.password !== body.password) {
-    return c.json({ error: 'PASSWORD_REQUIRED' }, 401)
+  // Verify password hash if password is set
+  if (share.password) {
+    if (!body.password) {
+      return c.json({ error: 'PASSWORD_REQUIRED' }, 401)
+    }
+    const isValid = await comparePassword(body.password, share.password)
+    if (!isValid) {
+      return c.json({ error: 'PASSWORD_REQUIRED' }, 401)
+    }
   }
 
   const note = await db.prepare('SELECT * FROM notes WHERE id=?').get(share.note_id) as any
@@ -1597,8 +1631,24 @@ app.delete('/api/trash/:id', requireAuth, async (c) => {
 
 app.delete('/api/trash', requireAuth, async (c) => {
   const db = c.get('db') as any
+  const user = c.get('user')
+  
+  // Get all trash items for logging
+  const trashItems = await db.prepare('SELECT * FROM trash').all()
+  
   // Empty trash
   await db.prepare('DELETE FROM trash').run()
+  
+  // 记录清空回收站
+  await logAction(db, {
+    user_id: user.email || user.userId,
+    action: 'empty_trash',
+    target_type: 'trash',
+    details: { count: trashItems.length },
+    ip_address: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown',
+    user_agent: c.req.header('user-agent') || 'unknown'
+  })
+  
   return c.json({ ok: true })
 })
 
@@ -1730,8 +1780,7 @@ app.get('/api/debug/env', (c) => {
     platform: 'cloudflare-pages',
     timestamp: new Date().toISOString(),
     env: {
-      hasDB: !!c.env.DB,
-      hasJWTSecret: !!c.env.JWT_SECRET
+      hasDB: !!c.env.DB
     }
   })
 })

@@ -1,0 +1,176 @@
+--- a/functions/server/app.ts
++++ b/functions/server/app.ts
+@@ -1,7 +1,24 @@
+ // Cloudflare Pages Functions 完整应用实现
+ import { Hono } from 'hono'
+ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+ import { nanoid } from 'nanoid'
++import crypto from 'crypto'
++
++// 从环境变量获取 JWT_SECRET
++function getJwtSecret(env?: any): string {
++  if (env?.JWT_SECRET) return env.JWT_SECRET
++  const globalSecret = typeof globalThis !== 'undefined' && (globalThis as any).JWT_SECRET
++  if (globalSecret) return globalSecret
++  console.warn('WARNING: Set JWT_SECRET environment variable!')
++  return crypto.randomBytes(32).toString('hex')
++}
++
++// 密码强度验证（至少 8 位，包含大小写字母和数字）
++function validatePasswordStrength(password: string): { valid: boolean, error?: string } {
++  if (password.length < 8) return { valid: false, error: 'Password must be at least 8 characters' }
++  if (!/[A-Z]/.test(password)) return { valid: false, error: 'Password must contain uppercase letter' }
++  if (!/[a-z]/.test(password)) return { valid: false, error: 'Password must contain lowercase letter' }
++  if (!/[0-9]/.test(password)) return { valid: false, error: 'Password must contain number' }
++  return { valid: true }
++}
+ 
+ // Web Crypto based JWT helpers for Cloudflare Workers
+ async function generateToken(payload: any, secret?: string): Promise<string> {
+@@ -42,6 +59,11 @@ async function verifyToken(token: string, secret?: string): Promise<any> {
+     const isValid = await crypto.subtle.verify('HMAC', key, signature, encoder.encode(data))
+     if (!isValid) return null
+     const payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')))
++    // 验证 issuer 和 audience
++    if (payload.iss && payload.iss !== 'xa-note') return null
++    if (payload.aud && payload.aud !== 'xa-note-users') return null
++    // 检查过期时间
++    if (payload.exp && Date.now() >= payload.exp * 1000) return null
+     return payload
+   } catch (error) {
+     return null
+@@ -478,7 +500,11 @@ app.post('/api/install', preventReinstall, async (c) => {
+       return c.json({ error: 'Valid admin email is required' }, 400)
+     }
+ 
+-    if (!adminPassword || adminPassword.length < 6) {
++    const passwordValidation = validatePasswordStrength(adminPassword)
++    if (!passwordValidation.valid) {
++      return c.json({ 
++        error: passwordValidation.error || 'Invalid password strength' 
++      }, 400)
+     }
+ 
+     // 初始化数据库结构
+@@ -623,7 +649,7 @@ app.post('/api/login', requireInstallation, async (c) => {
+   try {
+     const { email, password, captcha, turnstileToken } = await c.req.json()
+ 
+-    if (!email || !password) {
++    if (!email?.trim() || !password) {
+       return c.json({ ok: false, reason: 'missing_credentials' }, 400)
+     }
+ 
+@@ -707,15 +733,21 @@ app.post('/api/login', requireInstallation, async (c) => {
+     }
+ 
+     // 生成 JWT token 和 session ID
++    const jwtSecret = getJwtSecret(c.env)
+     const token = await generateToken({
+       userId: 'admin',
+       email: adminEmail.value,
+       role: 'admin',
++      iss: 'xa-note',
++      aud: 'xa-note-users',
++      exp: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60) // 7 天
+     })
+     const sessionId = generateSessionId()
+ 
+     // 设置 cookies - 增强安全性
+     setCookie(c, 'auth_token', token, {
+       httpOnly: true,
+       secure: true,
+-      sameSite: 'Lax',
++      sameSite: 'Strict',
+       path: '/',
+       maxAge: 60 * 60 * 24 * 7,
+       domain: undefined
+     })
+     setCookie(c, 'session_id', sessionId, {
+       httpOnly: true,
+       secure: true,
+-      sameSite: 'Lax',
++      sameSite: 'Strict',
+       path: '/',
+       maxAge: 60 * 60 * 24 * 7,
+       domain: undefined
+@@ -1353,6 +1385,11 @@ app.post('/api/share/:id', requireAuth, async (c) => {
+   if (!id) return c.json({ error: 'BAD_REQUEST' }, 400)
+   
+   const body = (await c.req.json()) as {
+     password?: string
+     expiresAt?: number
+   }
+ 
++  // 对分享密码进行哈希处理
++  let hashedPassword: string | null = null
++  if (body.password) {
++    hashedPassword = await hashPassword(body.password)
++  }
++
+   const code = nanoid(8)
+ 
+   await db.prepare(`
+     INSERT INTO shares (id, note_id, password, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?)
+   `).run(
+     code,
+     id,
+-    body.password ?? null,
++    hashedPassword,
+     body.expiresAt ?? null,
+     Date.now()
+   )
+@@ -1442,7 +1479,10 @@ app.post('/api/share/:code/view', async (c) => {
+     return c.json({ error: 'EXPIRED' }, 403)
+   }
+ 
+-  if (share.password && share.password !== body.password) {
++  // 验证哈希后的密码
++  if (share.password) {
++    const validPassword = await comparePassword(body.password || '', share.password)
++    if (!validPassword) return c.json({ error: 'PASSWORD_REQUIRED' }, 401)
++  }
+ 
+   const note = await db.prepare('SELECT * FROM notes WHERE id=?').get(share.note_id) as any
+ 
+@@ -1467,7 +1507,7 @@ app.get('/api/captcha', (c) => {
+   // Simple SVG captcha implementation for Cloudflare Pages
+   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+   let captchaText = ''
+   for (let i = 0; i < 4; i++) {
+     captchaText += chars.charAt(Math.floor(Math.random() * chars.length))
+   }
+ 
+   const svg = `<svg width="120" height="40" xmlns="http://www.w3.org/2000/svg">
+     <rect width="120" height="40" fill="#f4f4f5"/>
+-    <text x="60" y="25" font-family="Arial" font-size="18" text-anchor="middle" fill="#333">${captchaText}</text>
++    <text x="60" y="25" font-family="Arial" font-size="18" text-anchor="middle" fill="#333">${escapeHtml(captchaText)}</text>
+     <line x1="10" y1="15" x2="110" y2="25" stroke="#ccc" stroke-width="1"/>
+     <line x1="20" y1="30" x2="100" y2="10" stroke="#ccc" stroke-width="1"/>
+   </svg>`
+ 
+   // Save to cookie with security flags
+   setCookie(c, 'captcha', captchaText.toLowerCase(), {
+     httpOnly: true,
++    secure: true,
++    sameSite: 'Strict',
+     maxAge: 300,
+     path: '/'
+   })
+ 
+   return c.json({ svg })
+ })
++
++// HTML 转义辅助函数
++function escapeHtml(text: string): string {
++  const div = { innerHTML: '' } as any
++  const map: Record<string, string> = {
++    '&': '&amp;',
++    '<': '&lt;',
++    '>': '&gt;',
++    '"': '&quot;',
++    "'": '&#039;'
++  }
++  return text.replace(/[&<>"']/g, m => map[m])
++}

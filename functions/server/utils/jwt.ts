@@ -2,7 +2,8 @@
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 
-const JWT_SECRET = process.env.JWT_SECRET || (typeof globalThis !== 'undefined' && (globalThis as any).JWT_SECRET) || 'c390ea6f-8888-4cc2-b34e-a33ef10a313d'
+// Use the global JWT_SECRET that is generated on each startup
+declare const JWT_SECRET: string
 
 export interface JWTPayload {
   userId: string
