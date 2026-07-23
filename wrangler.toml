@@ -1,0 +1,7 @@
+# Cloudflare Pages 配置
+# 本项目为 Cloudflare Pages + Pages Functions（functions/ 目录）项目：
+# 静态资源位于仓库根目录，由 Pages 运行时托管；Functions 由运行时自动加载。
+# 通过 pages_build_output_dir 显式声明输出目录为根目录，避免被误探测为 dist / Worker 框架。
+
+name = "xa-note"
+pages_build_output_dir = "."
